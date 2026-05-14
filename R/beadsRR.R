@@ -138,6 +138,7 @@
             burn.in = jags.params$burn.in,
             post.thin = jags.params$post.thin,
             assay.names,
+            NULL,
             BPPARAM
         )
 

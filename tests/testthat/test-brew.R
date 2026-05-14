@@ -108,6 +108,27 @@ test_that("JAGS parameters are correctly tidied", {
     )
 })
 
+test_that("Filter parameters are correctly tidied", {
+    expect_null(.tidyInputsFilter(NULL))
+
+    filter.params <- .tidyInputsFilter(list(padj = 0.1, logfc = 2))
+    expect_equal(filter.params$padj, 0.1)
+    expect_equal(filter.params$logfc, 2)
+    expect_equal(
+        filter.params$assay.names,
+        c(logfc = "edgeR_logfc", prob = "edgeR_logpval")
+    )
+
+    expect_error(
+        .tidyInputsFilter(list(padj = 2)),
+        "between 0 and 1"
+    )
+    expect_error(
+        .tidyInputsFilter(list(run.edgeR = "yes")),
+        "TRUE or FALSE"
+    )
+})
+
 test_that("Assay names are correctly tidied", {
     assay.names <- c(
         phi = NULL, phi_Z = "logfc", Z = "prob",
@@ -134,6 +155,30 @@ test_that("Assay names are correctly tidied", {
         names(.tidyAssayNames(assay.names)),
         c("phi", "phi_Z", "Z", "c", "pi")
     )
+})
+
+test_that("summarizeRun handles samples with no pre-filtered peptides", {
+    sample <- colnames(sim_data)[sim_data$group != getBeadsName()][1]
+    jags_file <- file.path(tempdir(), paste0(sample, ".rds"))
+    saveRDS(list(no_mcmc = TRUE), jags_file)
+
+    se_matrix <- matrix(FALSE,
+        nrow = nrow(sim_data), ncol = ncol(sim_data),
+        dimnames = dimnames(sim_data)
+    )
+    run_matrix <- se_matrix
+
+    out <- summarizeRun(sim_data, jags_file, se_matrix,
+        assay.names = c(
+            phi = "beer_fc_marg", phi_Z = "beer_fc_cond", Z = "beer_prob",
+            c = NA, pi = NA
+        ),
+        run.matrix = run_matrix,
+        BPPARAM = BiocParallel::SerialParam()
+    )
+
+    expect_equal(unname(assay(out, "beer_prob")[, sample]), rep(0, nrow(out)))
+    expect_equal(unname(assay(out, "beer_fc_marg")[, sample]), rep(1, nrow(out)))
 })
 
 test_that("warns when overwriting sampleInfo", {

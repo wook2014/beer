@@ -15,50 +15,78 @@
 #'
 #' @return list of point estimates for c, pi, phi and Z
 summarizeRunOne <- function(object, file, se.matrix,
-    burn.in = 0, post.thin = 1) {
-    sample <- regmatches(file, regexec("/([^/]*)\\.rds", file))[[1]][2]
+    burn.in = 0, post.thin = 1, run.matrix = NULL) {
+    sample <- sub("\\.rds$", "", basename(file))
+    if (is.null(run.matrix)) run.matrix <- !se.matrix
 
     rds <- readRDS(file)
-    mcmc_matrix <- as.matrix(rds)
-    iter_ind <- seq(burn.in + 1, nrow(mcmc_matrix), by = post.thin)
-    mcmc_matrix <- mcmc_matrix[iter_ind, ]
 
     ## translate peptide indices
     pep_ind <- rep(NA, nrow(object))
-    pep_ind[which(!se.matrix[, sample])] <- seq(sum(!se.matrix[, sample]))
+    run_ind <- run.matrix[, sample] & !se.matrix[, sample]
+    pep_ind[which(run_ind)] <- seq(sum(run_ind))
     names(pep_ind) <- rownames(object)
 
-    # for convenience extract parameter specific samples
-    samples_c <- mcmc_matrix[, grepl("c", colnames(mcmc_matrix))]
-    samples_pi <- mcmc_matrix[, grepl("pi", colnames(mcmc_matrix))]
-    samples_phi <- mcmc_matrix[, grepl("phi\\[", colnames(mcmc_matrix))]
-    samples_Z <- mcmc_matrix[, grepl("Z\\[", colnames(mcmc_matrix))]
+    point_phi_value <- rep(NA_real_, nrow(object))
+    point_phi_enriched <- rep(NA_real_, nrow(object))
+    point_Z_value <- rep(NA_real_, nrow(object))
+    point_phi_value[!se.matrix[, sample] & !run_ind] <- 1
+    point_Z_value[!se.matrix[, sample] & !run_ind] <- 0
+
+    if (!is.list(rds) || !isTRUE(rds$no_mcmc)) {
+        mcmc_matrix <- as.matrix(rds)
+        iter_ind <- seq(burn.in + 1, nrow(mcmc_matrix), by = post.thin)
+        mcmc_matrix <- mcmc_matrix[iter_ind, , drop = FALSE]
+
+        # for convenience extract parameter specific samples
+        samples_c <- mcmc_matrix[, grepl("c", colnames(mcmc_matrix)),
+            drop = FALSE
+        ]
+        samples_pi <- mcmc_matrix[, grepl("pi", colnames(mcmc_matrix)),
+            drop = FALSE
+        ]
+        samples_phi <- mcmc_matrix[, grepl("phi\\[", colnames(mcmc_matrix)),
+            drop = FALSE
+        ]
+        samples_Z <- mcmc_matrix[, grepl("Z\\[", colnames(mcmc_matrix)),
+            drop = FALSE
+        ]
+
+        point_phi_value[run_ind] <- unname(colMeans(samples_phi))
+        point_phi_enriched[run_ind] <- unname(
+            colSums(samples_phi * samples_Z) / colSums(samples_Z)
+        )
+        point_Z_value[run_ind] <- unname(colMeans(samples_Z))
+        point_c_value <- mean(samples_c)
+        point_pi_value <- mean(samples_pi)
+    } else {
+        point_c_value <- NA_real_
+        point_pi_value <- 0
+    }
 
     # summarize info
     point_c <- data.frame(
         parameter = "c",
         sample = sample,
-        est_value = mean(samples_c)
+        est_value = point_c_value
     )
     point_pi <- data.frame(
         parameter = "pi",
         sample = sample,
-        est_value = mean(samples_pi)
+        est_value = point_pi_value
     )
     point_phi <- data.frame(
         parameter = "phi",
         sample = sample,
         peptide = rownames(object),
-        est_value = unname(colMeans(samples_phi)[pep_ind]),
-        est_enriched = unname((colSums(samples_phi * samples_Z) /
-            colSums(samples_Z))
-        [pep_ind])
+        est_value = point_phi_value,
+        est_enriched = point_phi_enriched
     )
     point_Z <- data.frame(
         parameter = "Z",
         sample = sample,
         peptide = rownames(object),
-        est_value = unname(colMeans(samples_Z)[pep_ind])
+        est_value = point_Z_value
     )
 
     list(
@@ -83,6 +111,7 @@ summarizeRunOne <- function(object, file, se.matrix,
 #' super-enriched peptides
 #' @param burn.in number of iterations to be burned
 #' @param post.thin thinning parameter
+#' @param run.matrix logical matrix indicating which peptides were run in JAGS
 #' @param assay.names named vector of specifying where to store point estimates
 #' @param BPPARAM \code{[BiocParallel::BiocParallelParam]} passed to
 #' BiocParallel functions.
@@ -99,7 +128,9 @@ summarizeRun <- function(object, jags.files, se.matrix,
         phi = NULL, phi_Z = "logfc", Z = "prob",
         c = "sampleInfo", pi = "sampleInfo"
     ),
+    run.matrix = NULL,
     BPPARAM = BiocParallel::bpparam()) {
+    if (is.null(run.matrix)) run.matrix <- !se.matrix
 
     ## Check that all files are present
     if (!all(file.exists(jags.files))) {
@@ -111,11 +142,7 @@ summarizeRun <- function(object, jags.files, se.matrix,
         ))
     }
 
-    samples <- vapply(
-        regmatches(jags.files, regexec("/([^/]*)\\.rds", jags.files)),
-        function(x) x[[2]],
-        character(1)
-    )
+    samples <- sub("\\.rds$", "", basename(jags.files))
     names(jags.files) <- samples
 
     ## Pre-allocate containers
@@ -170,7 +197,7 @@ summarizeRun <- function(object, jags.files, se.matrix,
             length(jags.files)
         )
         p(file_counter, class = "sticky", amount = 1)
-        summarizeRunOne(object, file, se.matrix, burn.in, post.thin)
+        summarizeRunOne(object, file, se.matrix, burn.in, post.thin, run.matrix)
     }, BPPARAM = BPPARAM)
 
     for (out in files_out) {

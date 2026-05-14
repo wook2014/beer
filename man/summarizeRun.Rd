@@ -12,6 +12,7 @@ summarizeRun(
   post.thin = 1,
   assay.names = c(phi = NULL, phi_Z = "logfc", Z = "prob", c = "sampleInfo", pi =
     "sampleInfo"),
+  run.matrix = NULL,
   BPPARAM = BiocParallel::bpparam()
 )
 }
@@ -28,6 +29,8 @@ super-enriched peptides}
 \item{post.thin}{thinning parameter}
 
 \item{assay.names}{named vector of specifying where to store point estimates}
+
+\item{run.matrix}{logical matrix indicating which peptides were run in JAGS}
 
 \item{BPPARAM}{\code{[BiocParallel::BiocParallelParam]} passed to
 BiocParallel functions.}

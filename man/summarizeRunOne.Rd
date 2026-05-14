@@ -4,7 +4,14 @@
 \alias{summarizeRunOne}
 \title{Derive point estimates for c, pi, phi, and Z for a particular sample}
 \usage{
-summarizeRunOne(object, file, se.matrix, burn.in = 0, post.thin = 1)
+summarizeRunOne(
+  object,
+  file,
+  se.matrix,
+  burn.in = 0,
+  post.thin = 1,
+  run.matrix = NULL
+)
 }
 \arguments{
 \item{object}{a \code{\link[PhIPData]{PhIPData}} object}
@@ -17,6 +24,8 @@ super-enriched peptides}
 \item{burn.in}{number of iterations to be burned}
 
 \item{post.thin}{thinning parameter}
+
+\item{run.matrix}{logical matrix indicating which peptides were run in JAGS}
 }
 \value{
 list of point estimates for c, pi, phi and Z

@@ -12,6 +12,7 @@ brew(
   se.params = list(method = "mle"),
   jags.params = list(n.chains = 1, n.adapt = 1000, n.iter = 10000, thin = 1, na.rm =
     TRUE, burn.in = 0, post.thin = 1, seed = as.numeric(format(Sys.Date(), "\%Y\%m\%d"))),
+  filter.params = NULL,
   sample.dir = NULL,
   assay.names = c(phi = NULL, phi_Z = "logfc", Z = "prob", c = "sampleInfo", pi =
     "sampleInfo"),
@@ -31,6 +32,11 @@ prior parameters (a_0, b_0)}
 enriched peptides}
 
 \item{jags.params}{named list of parameters for running MCMC using JAGS}
+
+\item{filter.params}{named list of edgeR pre-filtering parameters. If
+\code{NULL}, all non-super-enriched peptides are run. Otherwise, edgeR is
+run or reused to keep peptides with adjusted p-values below \code{padj} and
+log2 fold-changes above \code{logfc} for each sample.}
 
 \item{sample.dir}{path to temporarily store RDS files for each sample run,
 if \code{NULL} then \code{[base::tempdir]} is used to temporarily store
@@ -90,6 +96,18 @@ used to identify clearly enriched peptides.
 \strong{\code{jags.params}}. Named list of parameters for MCMC sampling. By
 default, BEER only runs one chain with 1,000 adaptation iteration and 10,000
 sampling iterations. If unspecified, BEER uses the current date as the seed.
+
+\strong{\code{filter.params}}. Named list of parameters for optionally
+pre-filtering peptides before MCMC sampling. If \code{NULL}, BEER runs all
+non-super-enriched peptides. Otherwise, edgeR output is generated or reused
+and peptides are run sample-by-sample only when their adjusted p-value is at
+or below \code{padj} and their log2 fold-change is at or above \code{logfc}.
+Valid entries include \code{run.edgeR}, \code{assay.names}, \code{padj},
+\code{logfc}, \code{method}, \code{threshold.cpm},
+\code{threshold.prevalence}, and \code{de.method}. Peptides filtered out are
+reported with posterior enrichment probability 0. By default, edgeR
+pre-filtering output is stored in \code{edgeR_logfc} and
+\code{edgeR_logpval}.
 
 \strong{\code{sample.dir}}. Path specifying where to store the intermediate
 results. If \code{NULL}, then results are stored in the default temporary

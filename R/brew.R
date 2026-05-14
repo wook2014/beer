@@ -138,6 +138,121 @@
     jags.params[params]
 }
 
+#' Clean inputs for edgeR pre-filtering
+#'
+#' Tidy inputs related to `filter.params`. Supplies default values for missing
+#' parameters and ensures that all required parameters are present.
+#'
+#' @param filter.params named list of edgeR pre-filtering parameters
+#'
+#' @return tidied list of filtering parameters.
+.tidyInputsFilter <- function(filter.params) {
+    if (is.null(filter.params)) return(NULL)
+
+    default <- list(
+        run.edgeR = TRUE,
+        assay.names = c(logfc = "edgeR_logfc", prob = "edgeR_logpval"),
+        padj = 0.2,
+        logfc = 0,
+        method = "BH",
+        threshold.cpm = 0,
+        threshold.prevalence = 0,
+        de.method = "exactTest"
+    )
+
+    params <- c(
+        "run.edgeR", "assay.names", "padj", "logfc", "method",
+        "threshold.cpm", "threshold.prevalence", "de.method"
+    )
+    missing_params <- params[!params %in% names(filter.params)]
+    filter.params[missing_params] <- default[missing_params]
+
+    if (is.null(names(filter.params$assay.names))) {
+        names(filter.params$assay.names) <- c("logfc", "prob")[
+            seq_len(length(filter.params$assay.names))
+        ]
+    }
+    if (is.na(filter.params$assay.names["logfc"])) {
+        filter.params$assay.names[["logfc"]] <- "logfc"
+    }
+    if (is.na(filter.params$assay.names["prob"])) {
+        filter.params$assay.names[["prob"]] <- "prob"
+    }
+
+    if (!is.logical(filter.params$run.edgeR) ||
+        length(filter.params$run.edgeR) != 1) {
+        stop("filter.params$run.edgeR must be TRUE or FALSE.")
+    }
+    if (!is.numeric(filter.params$padj) || filter.params$padj < 0 ||
+        filter.params$padj > 1) {
+        stop("filter.params$padj must be a numeric value between 0 and 1.")
+    }
+    if (!is.numeric(filter.params$logfc) || length(filter.params$logfc) != 1) {
+        stop("filter.params$logfc must be a single numeric value.")
+    }
+    if (!filter.params$de.method %in% c("exactTest", "glmQLFTest")) {
+        stop("Invalid edgeR method for filtering.")
+    }
+
+    filter.params[params]
+}
+
+#' Filter peptides before running BEER
+#'
+#' Run or reuse edgeR output and identify sample-specific candidate peptides
+#' for BEER MCMC sampling.
+#'
+#' @param object PhIPData object
+#' @param sample.id vector of sample IDs to filter
+#' @param filter.params named list of edgeR filtering parameters
+#' @param BPPARAM \code{[BiocParallel::BiocParallelParam]} passed to edgeR
+#'
+#' @return list containing a possibly updated object and a logical matrix.
+.filterBeerPeptides <- function(object, sample.id, filter.params, BPPARAM) {
+    filter.params <- .tidyInputsFilter(filter.params)
+    keep_matrix <- matrix(FALSE,
+        nrow = nrow(object), ncol = ncol(object),
+        dimnames = dimnames(object)
+    )
+    keep_matrix[, sample.id] <- TRUE
+
+    if (is.null(filter.params)) {
+        return(list(object = object, keep.matrix = keep_matrix))
+    }
+
+    edgeR_assays <- filter.params$assay.names
+    if (filter.params$run.edgeR) {
+        object <- runEdgeR(object,
+            threshold.cpm = filter.params$threshold.cpm,
+            threshold.prevalence = filter.params$threshold.prevalence,
+            assay.names = edgeR_assays,
+            beadsRR = FALSE,
+            de.method = filter.params$de.method,
+            BPPARAM = BPPARAM
+        )
+    } else if (!all(edgeR_assays %in% assayNames(object))) {
+        stop(
+            "filter.params$run.edgeR is FALSE, but the requested edgeR ",
+            "assays are not present in object."
+        )
+    }
+
+    logfc <- assay(object, edgeR_assays[["logfc"]])
+    logp <- assay(object, edgeR_assays[["prob"]])
+    keep_matrix[, sample.id] <- FALSE
+
+    for (sample in sample.id) {
+        pvalue <- 10^(-logp[, sample])
+        padj <- p.adjust(pvalue, method = filter.params$method)
+        keep_matrix[, sample] <- !is.na(padj) &
+            !is.na(logfc[, sample]) &
+            padj <= filter.params$padj &
+            logfc[, sample] >= filter.params$logfc
+    }
+
+    list(object = object, keep.matrix = keep_matrix)
+}
+
 #' Clean-up specified assay names
 #'
 #' Tidy inputs related to `assay.names`. Supplies default values for
@@ -289,7 +404,9 @@ brewOne <- function(object, sample, prior.params,
 #' @importMethodsFrom BiocParallel bplapply
 .brewSamples <- function(object, sample.id, beads.id, se.matrix,
     prior.params, beads.prior, beads.args, jags.params,
-    tmp.dir, BPPARAM) {
+    tmp.dir, BPPARAM, run.matrix = NULL) {
+    if (is.null(run.matrix)) run.matrix <- !se.matrix
+
     progressr::handlers("txtprogressbar")
     p <- progressr::progressor(along = sample.id)
 
@@ -301,11 +418,20 @@ brewOne <- function(object, sample, prior.params,
         p(sample_counter, class = "sticky", amount = 1)
 
         ## Subset super-enriched and only single sample
-        one_sample <- object[!se.matrix[, sample], c(beads.id, sample)]
+        peptide_run <- run.matrix[, sample] & !se.matrix[, sample]
+        if (!any(peptide_run)) {
+            saveRDS(
+                list(no_mcmc = TRUE),
+                file.path(tmp.dir, paste0(sample, ".rds"))
+            )
+            return(Sys.getpid())
+        }
+
+        one_sample <- object[peptide_run, c(beads.id, sample)]
 
         ## Calculate new beads-only priors
         new_beads <- if (prior.params$method == "custom") {
-            lapply(beads.prior, function(x) x[!se.matrix[, sample]])
+            lapply(beads.prior, function(x) x[peptide_run])
         } else {
             do.call(getAB, c(
                 list(
@@ -417,6 +543,10 @@ brewOne <- function(object, sample, prior.params,
 #' @param se.params named list of parameters specific to identifying clearly
 #' enriched peptides
 #' @param jags.params named list of parameters for running MCMC using JAGS
+#' @param filter.params named list of edgeR pre-filtering parameters. If
+#' \code{NULL}, all non-super-enriched peptides are run. Otherwise, edgeR is
+#' run or reused to keep peptides with adjusted p-values below \code{padj} and
+#' log2 fold-changes above \code{logfc} for each sample.
 #' @param sample.dir path to temporarily store RDS files for each sample run,
 #' if \code{NULL} then \code{[base::tempdir]} is used to temporarily store
 #' MCMC output and cleaned afterwards.
@@ -473,6 +603,7 @@ brew <- function(object,
             "%Y%m%d"
         ))
     ),
+    filter.params = NULL,
     sample.dir = NULL,
     assay.names = c(
         phi = NULL, phi_Z = "logfc", Z = "prob",
@@ -491,6 +622,7 @@ brew <- function(object,
         NULL
     }
     jags.params <- .tidyInputsJAGS(jags.params)
+    filter.params <- .tidyInputsFilter(filter.params)
     assay.names <- .tidyAssayNames(assay.names)
 
     ## Get sample names
@@ -505,6 +637,11 @@ brew <- function(object,
     } else {
         do.call(guessEnriched, c(list(object = object), se.params))
     }
+
+    filter_out <- .filterBeerPeptides(object, sample_id, filter.params, BPPARAM)
+    object <- filter_out$object
+    run.matrix <- filter_out$keep.matrix & !se.matrix
+    if (beadsRR) run.matrix[, beads_id] <- TRUE
 
     ## Create temporary directory for output of JAGS models
     tmp.dir <- if (is.null(sample.dir)) {
@@ -577,7 +714,7 @@ brew <- function(object,
         pids <- .brewSamples(
             object, sample_id, beads_id, se.matrix,
             prior.params, beads.prior, beads.args,
-            jags.params, tmp.dir, BPPARAM
+            jags.params, tmp.dir, BPPARAM, run.matrix
         )
     })
 
@@ -588,6 +725,7 @@ brew <- function(object,
         burn.in = jags.params$burn.in,
         post.thin = jags.params$post.thin,
         assay.names,
+        run.matrix,
         BPPARAM
     )
 
