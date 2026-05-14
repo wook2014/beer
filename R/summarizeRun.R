@@ -191,13 +191,15 @@ summarizeRun <- function(object, jags.files, se.matrix,
     ## to be parallelized
     progressr::handlers("txtprogressbar")
     p <- progressr::progressor(along = jags.files)
+    .summarizeRunOne <- summarizeRunOne
     files_out <- bplapply(jags.files, function(file) {
         file_counter <- paste0(
             which(file == jags.files), " of ",
             length(jags.files)
         )
         p(file_counter, class = "sticky", amount = 1)
-        summarizeRunOne(object, file, se.matrix, burn.in, post.thin, run.matrix)
+        .summarizeRunOne(object, file, se.matrix, burn.in, post.thin,
+            run.matrix = run.matrix)
     }, BPPARAM = BPPARAM)
 
     for (out in files_out) {
